@@ -157,7 +157,7 @@ jobs:
              echo "Creating release $TAG..."
              gh release create "$TAG" \
                 --repo "$GITHUB_REPOSITORY" \
-                --title "PyICU sdist $TAG" \
+                --title "$TAG" \
                 --notes "Source distribution (sdist) for PyICU $TAG, fetched from PyPI." \
                 --target "$TARGET_COMMIT" # Use the new commit SHA
              echo "Release $TAG created successfully."
