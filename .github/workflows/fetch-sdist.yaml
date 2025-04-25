@@ -1,0 +1,170 @@
+name: Sync Latest PyICU Release
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch: 
+
+permissions:
+  contents: write
+  packages: none # Explicitly state no package permissions needed
+
+jobs:
+  check-and-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get latest pyicu-build release tag
+        id: get_remote_tag
+        run: |
+          echo "Fetching latest release tag from cgohlke/pyicu-build..."
+          # Use gh api for potentially more robust parsing and error handling
+          LATEST_TAG=$(gh api repos/cgohlke/pyicu-build/releases/latest --jq '.tag_name')
+          if [ -z "$LATEST_TAG" ] || [ "$LATEST_TAG" = "null" ]; then # Check for empty or null response
+            echo "::error::Failed to fetch latest tag from cgohlke/pyicu-build using API."
+            # Fallback or alternative method could be added here if needed
+            exit 1
+          fi
+          echo "Latest remote tag: $LATEST_TAG"
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get current tag from local file
+        id: get_local_tag
+        run: |
+          LOCAL_TAG_FILE=".latest_release_tag"
+          CURRENT_TAG="" # Default to empty
+          if [ -f "$LOCAL_TAG_FILE" ]; then
+            # Read the first line, trim whitespace
+            CURRENT_TAG=$(head -n 1 "$LOCAL_TAG_FILE" | xargs)
+          else
+            echo "Local tag file ($LOCAL_TAG_FILE) not found."
+          fi
+          echo "Current local tag: '$CURRENT_TAG'" # Add quotes for clarity
+          echo "current_tag=$CURRENT_TAG" >> $GITHUB_OUTPUT
+
+      - name: Check if update is needed
+        id: check_update
+        run: |
+          REMOTE_TAG="${{ steps.get_remote_tag.outputs.latest_tag }}"
+          LOCAL_TAG="${{ steps.get_local_tag.outputs.current_tag }}"
+          if [[ "$REMOTE_TAG" == "$LOCAL_TAG" ]]; then
+            echo "Tags match ('$REMOTE_TAG'). No update needed."
+            echo "update_needed=false" >> $GITHUB_OUTPUT
+          else
+            echo "Tags differ (Remote: '$REMOTE_TAG', Local: '$LOCAL_TAG'). Update required."
+            echo "update_needed=true" >> $GITHUB_OUTPUT
+          fi
+
+      # --- Steps below only run if an update is needed ---
+
+      - name: Prepare variables for release
+        if: steps.check_update.outputs.update_needed == 'true'
+        id: prep_vars
+        run: |
+          TAG_NAME="${{ steps.get_remote_tag.outputs.latest_tag }}"
+          # Remove leading 'v' if present
+          VERSION=${TAG_NAME#v}
+          SDIST_FILENAME="PyICU-${VERSION}.tar.gz"
+          SDIST_URL="https://files.pythonhosted.org/packages/source/p/pyicu/${SDIST_FILENAME}"
+
+          echo "Tag Name: $TAG_NAME"
+          echo "Version: $VERSION"
+          echo "Sdist Filename: $SDIST_FILENAME"
+          echo "Sdist URL: $SDIST_URL"
+
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "sdist_filename=$SDIST_FILENAME" >> $GITHUB_OUTPUT
+          echo "sdist_url=$SDIST_URL" >> $GITHUB_OUTPUT
+
+      - name: Download PyICU sdist
+        if: steps.check_update.outputs.update_needed == 'true'
+        run: |
+          SDIST_FILENAME="${{ steps.prep_vars.outputs.sdist_filename }}"
+          SDIST_URL="${{ steps.prep_vars.outputs.sdist_url }}"
+          echo "Downloading $SDIST_FILENAME from $SDIST_URL"
+          # Use curl with fail-fast, follow redirects, output to file, show errors silently on success
+          curl --fail --location --output "$SDIST_FILENAME" --silent --show-error "$SDIST_URL"
+          echo "Download attempt finished."
+          # Verify file exists and has size > 0
+          if [ ! -s "$SDIST_FILENAME" ]; then
+             echo "::error::Downloaded file $SDIST_FILENAME is empty or does not exist. Check URL: $SDIST_URL"
+             exit 1
+          fi
+          echo "Successfully downloaded:"
+          ls -l "$SDIST_FILENAME"
+
+      # Commit the tag *after* successfully downloading the corresponding sdist
+      - name: Update local tag file and commit
+        # Add an ID to this step to reference its output
+        id: commit_tag_file
+        if: steps.check_update.outputs.update_needed == 'true'
+        run: |
+          LATEST_TAG="${{ steps.get_remote_tag.outputs.latest_tag }}"
+          LOCAL_TAG_FILE=".latest_release_tag"
+          NEW_COMMIT_SHA="" # Initialize
+
+          echo "Updating $LOCAL_TAG_FILE to $LATEST_TAG"
+          echo "$LATEST_TAG" > "$LOCAL_TAG_FILE"
+
+          # Configure git user
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+
+          # Add, commit, and push the change
+          git add "$LOCAL_TAG_FILE"
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes detected in $LOCAL_TAG_FILE to commit."
+            # If no changes, the target should remain the original SHA
+            NEW_COMMIT_SHA="${{ github.sha }}"
+          else
+            git commit -m "Sync: Update latest PyICU tag to $LATEST_TAG"
+            echo "Pushing changes to branch ${{ github.ref_name }}..."
+            # Use GITHUB_TOKEN for authentication with push
+            git push origin HEAD:${{ github.ref_name }}
+            echo "Committed and pushed update for $LOCAL_TAG_FILE"
+            # Get the SHA of the *new* commit AFTER push
+            NEW_COMMIT_SHA=$(git rev-parse HEAD)
+            echo "New commit SHA: $NEW_COMMIT_SHA"
+          fi
+          # Output the SHA of the commit that contains the relevant state
+          echo "commit_sha=$NEW_COMMIT_SHA" >> $GITHUB_OUTPUT
+        env:
+          # GITHUB_TOKEN is needed for the push operation
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create Release and Upload sdist
+        if: steps.check_update.outputs.update_needed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.prep_vars.outputs.tag_name }}
+          SDIST_FILE: ${{ steps.prep_vars.outputs.sdist_filename }}
+          # Get the target commit SHA from the previous step's output
+          TARGET_COMMIT: ${{ steps.commit_tag_file.outputs.commit_sha }}
+        run: |
+          echo "Attempting to create release for tag $TAG in repository $GITHUB_REPOSITORY"
+          echo "Targeting commit: $TARGET_COMMIT"
+
+          # Check if release already exists
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+             echo "Release $TAG already exists. Skipping creation, will attempt asset upload."
+          else
+             echo "Creating release $TAG..."
+             gh release create "$TAG" \
+                --repo "$GITHUB_REPOSITORY" \
+                --title "PyICU sdist $TAG" \
+                --notes "Source distribution (sdist) for PyICU $TAG, fetched from PyPI." \
+                --target "$TARGET_COMMIT" # Use the new commit SHA
+             echo "Release $TAG created successfully."
+          fi
+
+          echo "Uploading asset $SDIST_FILE to release $TAG..."
+          # Use --clobber to overwrite the asset if it already exists
+          gh release upload "$TAG" "$SDIST_FILE" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Asset $SDIST_FILE uploaded successfully to release $TAG."
+
