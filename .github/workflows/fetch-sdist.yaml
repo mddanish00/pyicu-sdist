@@ -168,3 +168,15 @@ jobs:
           gh release upload "$TAG" "$SDIST_FILE" --repo "$GITHUB_REPOSITORY" --clobber
           echo "Asset $SDIST_FILE uploaded successfully to release $TAG."
 
+      - name: Trigger python-index Rebuilding
+        if: steps.check_update.outputs.update_needed == 'true'
+        uses: octokit/request-action@v2.x
+        with:
+          route: POST /repos/{owner}/{repo}/actions/workflows/{workflow}/dispatches
+          owner: mddanish00
+          repo: python-index
+          workflow: generate-index.yaml
+          ref: main
+        env:
+          GITHUB_TOKEN: ${{ secrets.ACTION_SECRET }}
+
