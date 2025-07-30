@@ -2,7 +2,7 @@ name: Sync Latest PyICU Release
 
 on:
   schedule:
-    - cron: '0 16 * * *'
+    - cron: '0 16 1 * *'
   workflow_dispatch: 
 
 permissions:
