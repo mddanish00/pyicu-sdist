@@ -66,37 +66,49 @@ jobs:
         id: prep_vars
         run: |
           TAG_NAME="${{ steps.get_remote_tag.outputs.latest_tag }}"
-          # Remove leading 'v' if present
           VERSION=${TAG_NAME#v}
-          SDIST_FILENAME="PyICU-${VERSION}.tar.gz"
-          SDIST_URL="https://files.pythonhosted.org/packages/source/p/pyicu/${SDIST_FILENAME}"
+          
+          SDIST_FILENAME_DEFAULT="PyICU-${VERSION}.tar.gz"
+          SDIST_URL_DEFAULT="https://files.pythonhosted.org/packages/source/p/pyicu/${SDIST_FILENAME_DEFAULT}"
+          
+          SDIST_FILENAME_ALT="pyicu-${VERSION}.tar.gz"
+          SDIST_URL_ALT="https://files.pythonhosted.org/packages/source/p/pyicu/${SDIST_FILENAME_ALT}"
+
+          # This will be the name of the file after download, regardless of which source it came from
+          FINAL_SDIST_FILENAME="pyicu-sdist.tar.gz"
 
           echo "Tag Name: $TAG_NAME"
           echo "Version: $VERSION"
-          echo "Sdist Filename: $SDIST_FILENAME"
-          echo "Sdist URL: $SDIST_URL"
+          echo "Default Sdist URL: $SDIST_URL_DEFAULT"
+          echo "Alternative Sdist URL: $SDIST_URL_ALT"
 
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "sdist_filename=$SDIST_FILENAME" >> $GITHUB_OUTPUT
-          echo "sdist_url=$SDIST_URL" >> $GITHUB_OUTPUT
+          echo "sdist_url_default=$SDIST_URL_DEFAULT" >> $GITHUB_OUTPUT
+          echo "sdist_url_alt=$SDIST_URL_ALT" >> $GITHUB_OUTPUT
+          echo "final_sdist_filename=$FINAL_SDIST_FILENAME" >> $GITHUB_OUTPUT
 
       - name: Download PyICU sdist
         if: steps.check_update.outputs.update_needed == 'true'
         run: |
-          SDIST_FILENAME="${{ steps.prep_vars.outputs.sdist_filename }}"
-          SDIST_URL="${{ steps.prep_vars.outputs.sdist_url }}"
-          echo "Downloading $SDIST_FILENAME from $SDIST_URL"
-          # Use curl with fail-fast, follow redirects, output to file, show errors silently on success
-          curl --fail --location --output "$SDIST_FILENAME" --silent --show-error "$SDIST_URL"
+          SDIST_URL_DEFAULT="${{ steps.prep_vars.outputs.sdist_url_default }}"
+          SDIST_URL_ALT="${{ steps.prep_vars.outputs.sdist_url_alt }}"
+          FINAL_SDIST_FILENAME="${{ steps.prep_vars.outputs.final_sdist_filename }}"
+
+          echo "Attempting to download from default URL: $SDIST_URL_DEFAULT"
+          curl --fail --location --output "$FINAL_SDIST_FILENAME" --silent --show-error "$SDIST_URL_DEFAULT" || \
+          (echo "Default download failed. Attempting alternative URL: $SDIST_URL_ALT" && \
+           curl --fail --location --output "$FINAL_SDIST_FILENAME" --silent --show-error "$SDIST_URL_ALT")
+          
           echo "Download attempt finished."
-          # Verify file exists and has size > 0
-          if [ ! -s "$SDIST_FILENAME" ]; then
-             echo "::error::Downloaded file $SDIST_FILENAME is empty or does not exist. Check URL: $SDIST_URL"
-             exit 1
+
+          if [ ! -s "$FINAL_SDIST_FILENAME" ]; then
+            echo "::error::Failed to download sdist from both default and alternative URLs."
+            exit 1
           fi
+          
           echo "Successfully downloaded:"
-          ls -l "$SDIST_FILENAME"
+          ls -l "$FINAL_SDIST_FILENAME"
 
       # Commit the tag *after* successfully downloading the corresponding sdist
       - name: Update local tag file and commit
@@ -143,7 +155,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.prep_vars.outputs.tag_name }}
-          SDIST_FILE: ${{ steps.prep_vars.outputs.sdist_filename }}
+          SDIST_FILE: ${{ steps.prep_vars.outputs.final_sdist_filename }}
           # Get the target commit SHA from the previous step's output
           TARGET_COMMIT: ${{ steps.commit_tag_file.outputs.commit_sha }}
         run: |
