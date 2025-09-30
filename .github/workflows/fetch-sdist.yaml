@@ -147,7 +147,7 @@ jobs:
             # If no changes, the target should remain the original SHA
             NEW_COMMIT_SHA="${{ github.sha }}"
           else
-            git commit -m "Sync: Update latest PyICU tag to $LATEST_TAG"
+            git commit -m "chore(sync): Update latest PyICU tag to $LATEST_TAG"
             echo "Pushing changes to branch ${{ github.ref_name }}"...
             # Use GITHUB_TOKEN for authentication with push
             git push origin HEAD:${{ github.ref_name }}
@@ -168,11 +168,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.prep_vars.outputs.tag_name }}
           SDIST_FILE: ${{ steps.download_sdist.outputs.sdist_filename }}
-          # Get the target commit SHA from the previous step's output
-          TARGET_COMMIT: ${{ steps.commit_tag_file.outputs.commit_sha }}
         run: |
           echo "Attempting to create release for tag $TAG in repository $GITHUB_REPOSITORY"
-          echo "Targeting commit: $TARGET_COMMIT"
 
           # Check if release already exists
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
@@ -183,7 +180,6 @@ jobs:
                 --repo "$GITHUB_REPOSITORY" \
                 --title "$TAG" \
                 --notes "Source distribution (sdist) for PyICU $TAG, fetched from PyPI."
-                --target "$TARGET_COMMIT" # Use the new commit SHA
              echo "Release $TAG created successfully."
           fi
 
